@@ -1,2 +1,5 @@
 __pycache__
 .python-version
+data
+lightning_logs/
+mlruns/
