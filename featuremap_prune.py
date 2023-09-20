@@ -2,7 +2,7 @@ from fault_diagnosis_baseline import fdob, info
 from fault_diagnosis_baseline.fdob import processing
 from fault_diagnosis_baseline.fdob.model.module import Conv1d, Conv2d
 from pruning.utils import LightningModuleWrapper
-from pruning.activation.featuremap import OutputFeaturemapPrune
+from pruning.activation.structured import OutputFeaturemapPrune
 from utils import get_datamodule
 
 from argparse import ArgumentParser, Namespace
@@ -61,7 +61,7 @@ def parse_args():
     parser.add_argument(
         '--activation-sparsity',
         type=float,
-        default=0.5
+        default=None
     )
     parser.add_argument(
         '--batch-size',
@@ -98,6 +98,8 @@ def parse_args():
 
 
 def main(seed, args: Namespace):
+
+    logging.getLogger().setLevel(logging.INFO)
 
     os.environ['CUDA_VISIBLE_DEVICES'] = str(args.device)
 
@@ -138,6 +140,7 @@ def main(seed, args: Namespace):
         tf_data=tf_data,
         tf_label=tf_label,
         snr_values=snr_values,
+        sample_shift=1024
     )
 
     if data_path.endswith('/'):
@@ -160,6 +163,7 @@ def main(seed, args: Namespace):
                 module.register_forward_hook(fm_prune)
     
     else:
+        logging.info("The network will not be pruned.")
         model = model_cls(n_classes=n_classes, act_layer=True)
 
     optimizer = Adam(
@@ -172,7 +176,7 @@ def main(seed, args: Namespace):
 
     callbacks = []
     
-    experiment_name = 'Featuremap Pruning'
+    experiment_name = f'Featuremap Pruning {dataset_name.upper()}'
 
     experiment = mlflow.get_experiment_by_name(experiment_name)
     if experiment:
