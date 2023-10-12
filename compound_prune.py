@@ -4,6 +4,10 @@ from fault_diagnosis_baseline.fdob.model.module import Conv1d, Conv2d
 from pruning.utils import LightningModuleWrapper
 from pruning.activation.structured import OutputFeaturemapPrune
 from pruning.activation.unstructured import OutputActivationPrune
+from pruning.manager import IterativePruningManager
+from pruning.scheduler import LinearSparsityScheduler
+from pruning.pruner import L1UnstructuredPruner, LnStructuredPruner
+from pruning.pl_callback import PruningManagerCallback
 from utils import get_datamodule
 
 from argparse import ArgumentParser, Namespace
@@ -50,6 +54,20 @@ def parse_args():
         '--epochs',
         type=int,
         default=100
+    )
+    parser.add_argument(
+        '--weight-drop',
+        choices=['magnitude', 'channel', 'none']
+    )
+    parser.add_argument(
+        '--weight-sparsity',
+        type=float,
+        default=None
+    )
+    parser.add_argument(
+        '--pruning-steps',
+        type=int,
+        default=None
     )
     parser.add_argument(
         '--activation-drop',
@@ -109,9 +127,12 @@ def main(seed, args: Namespace):
     batch_size = args.batch_size
     num_workers = args.num_workers
     snr_values = args.snr_values
+    prune_method = args.weight_drop
+    weight_sparsity = args.weight_sparsity
+    pruning_steps = args.pruning_steps
     drop_method = args.activation_drop
     score_type = args.score_type
-    sparsity = args.activation_sparsity
+    activation_sparsity = args.activation_sparsity
 
     cuda_deterministic = True
 
@@ -155,26 +176,58 @@ def main(seed, args: Namespace):
     n_classes = n_classes_map[dataset_name]
 
     if drop_method == 'featuremap':
-        fm_prune = OutputFeaturemapPrune(sparsity=sparsity, score_type=score_type)
-        model = model_cls(n_classes=n_classes, act_layer=False, no_drop=True)
+        fm_prune = OutputFeaturemapPrune(sparsity=activation_sparsity, score_type=score_type)
+        model = model_cls(n_classes=n_classes, act_layer=False)
 
         for name, module in model.named_modules():
             if isinstance(module, (Conv1d, Conv2d)):
-                logging.info(f"{name} will be pruned with {sparsity} sparsity.")
+                logging.info(f"{name} will be pruned with {activation_sparsity} sparsity.")
                 module.register_forward_hook(fm_prune)
     
     elif drop_method == 'activation':
-        act_prune = OutputActivationPrune(sparsity=sparsity)
+        act_prune = OutputActivationPrune(sparsity=activation_sparsity)
         model = model_cls(n_classes=n_classes, act_layer=False, no_drop=True)
 
         for name, module in model.named_modules():
             if isinstance(module, (Conv1d, Conv2d)):
-                logging.info(f"{name} will be pruned with {sparsity} sparsity.")
+                logging.info(f"{name} will be pruned with {activation_sparsity} sparsity.")
                 module.register_forward_hook(act_prune)
 
     else:
         logging.info("The network will not be pruned.")
         model = model_cls(n_classes=n_classes, act_layer=True)
+
+
+    callbacks = []
+
+    if prune_method != 'none':
+        pruning_points = [(int(args.epochs / (pruning_steps + 1)) - 1) * (i + 1) for i in range(pruning_steps) ]
+        manager = IterativePruningManager(steps=pruning_steps, pruning_points=pruning_points)
+
+        parameters = []
+        for name, module in model.named_modules():
+            if isinstance(module, (nn.Conv1d, nn.Conv2d)):
+                logging.info(f"Weight of {name} will be pruned with {weight_sparsity} sparsity.")
+                parameters.append((module, 'weight'))
+
+        pruner_kwargs = dict()
+        if prune_method == 'magnitude':
+            pruner = L1UnstructuredPruner
+        elif prune_method == 'channel':
+            pruner = LnStructuredPruner
+            pruner_kwargs['n'] = 2
+            pruner_kwargs['dim'] = 0
+
+        manager.register(
+            parameters,
+            pruner,
+            weight_sparsity,
+            LinearSparsityScheduler,
+            **pruner_kwargs
+        )
+        pruning_callback = PruningManagerCallback(manager=manager, on_epoch=True)
+        callbacks.append(pruning_callback)
+
 
     optimizer = Adam(
         model.parameters(),
@@ -183,10 +236,8 @@ def main(seed, args: Namespace):
     )
 
     pl_module = LightningModuleWrapper(model=model, optimizer=optimizer)
-
-    callbacks = []
     
-    experiment_name = f'STIM-CNN No Dropout Pruning {dataset_name.upper()}'
+    experiment_name = f'Compound Pruning {model_name.upper()} {dataset_name.upper()}'
 
     experiment = mlflow.get_experiment_by_name(experiment_name)
     if experiment:
