@@ -3,7 +3,6 @@ from fault_diagnosis_baseline.fdob import processing
 from fault_diagnosis_baseline.fdob.model.module import Conv1d, Conv2d
 from pruning.utils import LightningModuleWrapper
 from pruning.activation.structured import OutputFeaturemapPrune
-from pruning.activation.unstructured import OutputActivationPrune
 from utils import get_datamodule
 
 from argparse import ArgumentParser, Namespace
@@ -163,15 +162,6 @@ def main(seed, args: Namespace):
                 logging.info(f"{name} will be pruned with {sparsity} sparsity.")
                 module.register_forward_hook(fm_prune)
     
-    elif drop_method == 'activation':
-        act_prune = OutputActivationPrune(sparsity=sparsity)
-        model = model_cls(n_classes=n_classes, act_layer=False)
-
-        for name, module in model.named_modules():
-            if isinstance(module, (Conv1d, Conv2d)):
-                logging.info(f"{name} will be pruned with {sparsity} sparsity.")
-                module.register_forward_hook(act_prune)
-
     else:
         logging.info("The network will not be pruned.")
         model = model_cls(n_classes=n_classes, act_layer=True)
@@ -186,7 +176,7 @@ def main(seed, args: Namespace):
 
     callbacks = []
     
-    experiment_name = f'{model_name}_{dataset_name}'
+    experiment_name = f'Featuremap Pruning {dataset_name.upper()}'
 
     experiment = mlflow.get_experiment_by_name(experiment_name)
     if experiment:

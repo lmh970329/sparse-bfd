@@ -5,3 +5,9 @@ lightning_logs/
 mlruns/
 *.sh
 *.ipynb
+logs/
+*.xlsx
+*.png
+*.bin
+*.pickle
+*.out

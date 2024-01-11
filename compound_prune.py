@@ -186,7 +186,7 @@ def main(seed, args: Namespace):
     
     elif drop_method == 'activation':
         act_prune = OutputActivationPrune(sparsity=activation_sparsity)
-        model = model_cls(n_classes=n_classes, act_layer=False, no_drop=True)
+        model = model_cls(n_classes=n_classes, act_layer=False)
 
         for name, module in model.named_modules():
             if isinstance(module, (Conv1d, Conv2d)):

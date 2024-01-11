@@ -1,8 +1,8 @@
 from fault_diagnosis_baseline import fdob, info
 from fault_diagnosis_baseline.fdob import processing
-from fault_diagnosis_baseline.fdob.model.module import Conv1d, Conv2d
+from fault_diagnosis_baseline.fdob.model.module import MultiHeadSelfAttention, MultiLayerPerceptron
 from pruning.utils import LightningModuleWrapper
-from pruning.activation.structured import OutputFeaturemapPrune
+from pruning.activation.structured import OutputEmbeddingPrune, OutputTokenPrune
 from pruning.activation.unstructured import OutputActivationPrune
 from utils import get_datamodule
 
@@ -53,7 +53,7 @@ def parse_args():
     )
     parser.add_argument(
         '--activation-drop',
-        choices=['activation', 'featuremap', 'none']
+        choices=['unstr', 'str', 'token', 'none']
     )
     parser.add_argument(
         '--score-type',
@@ -153,28 +153,32 @@ def main(seed, args: Namespace):
     test_loader = dmodule.dataloaders[dataset_name]['test']
 
     n_classes = n_classes_map[dataset_name]
+    model = model_cls(n_classes=n_classes)
 
-    if drop_method == 'featuremap':
-        fm_prune = OutputFeaturemapPrune(sparsity=sparsity, score_type=score_type)
-        model = model_cls(n_classes=n_classes, act_layer=False)
-
+    if drop_method == 'str':
+        prune = OutputEmbeddingPrune(sparsity=sparsity, score_type=score_type)
         for name, module in model.named_modules():
-            if isinstance(module, (Conv1d, Conv2d)):
-                logging.info(f"{name} will be pruned with {sparsity} sparsity.")
-                module.register_forward_hook(fm_prune)
+            if isinstance(module, (MultiLayerPerceptron, MultiHeadSelfAttention)):
+                logging.info(f"The output of {name} will be pruned with {sparsity} sparsity.")
+                prune.apply(module)
     
-    elif drop_method == 'activation':
-        act_prune = OutputActivationPrune(sparsity=sparsity)
-        model = model_cls(n_classes=n_classes, act_layer=False)
-
+    elif drop_method == 'unstr':
+        prune = OutputActivationPrune(sparsity=sparsity)
         for name, module in model.named_modules():
-            if isinstance(module, (Conv1d, Conv2d)):
-                logging.info(f"{name} will be pruned with {sparsity} sparsity.")
-                module.register_forward_hook(act_prune)
+            if isinstance(module, (MultiLayerPerceptron, MultiHeadSelfAttention)):
+                logging.info(f"The output of {name} will be pruned with {sparsity} sparsity.")
+                prune.apply(module)
+
+    elif drop_method == 'token':
+        prune = OutputTokenPrune(sparsity=sparsity)
+        for name, module in model.named_modules():
+            if isinstance(module, (MultiLayerPerceptron, MultiHeadSelfAttention)):
+                logging.info(f"The output of {name} will be pruned with {sparsity} sparsity.")
+                prune.apply(module)
 
     else:
         logging.info("The network will not be pruned.")
-        model = model_cls(n_classes=n_classes, act_layer=True)
+        
 
     optimizer = Adam(
         model.parameters(),
@@ -186,7 +190,7 @@ def main(seed, args: Namespace):
 
     callbacks = []
     
-    experiment_name = f'{model_name}_{dataset_name}'
+    experiment_name = f'S-Transformer Pruning {dataset_name.upper()}'
 
     experiment = mlflow.get_experiment_by_name(experiment_name)
     if experiment:
@@ -218,7 +222,6 @@ def main(seed, args: Namespace):
             deterministic=cuda_deterministic,
             benchmark=False,
             log_every_n_steps=len(train_loader),
-            enable_progress_bar=False
         )
 
         mlflow.pytorch.autolog(log_every_n_epoch=1, log_models=False)

@@ -156,21 +156,31 @@ def main(seed, args: Namespace):
 
     if drop_method == 'featuremap':
         fm_prune = OutputFeaturemapPrune(sparsity=sparsity, score_type=score_type)
-        model = model_cls(n_classes=n_classes, act_layer=False)
+        model = model_cls(n_classes=n_classes, act_layer=False, no_drop=True)
 
         for name, module in model.named_modules():
             if isinstance(module, (Conv1d, Conv2d)):
                 logging.info(f"{name} will be pruned with {sparsity} sparsity.")
                 module.register_forward_hook(fm_prune)
+
+        lin_prune = OutputActivationPrune(sparsity=sparsity)
+        lin_layers = [module for module in model._linear_layers if isinstance(module, nn.Linear)][:-1]
+        for lin_layer in lin_layers:
+            lin_prune.apply(lin_layer)
     
     elif drop_method == 'activation':
         act_prune = OutputActivationPrune(sparsity=sparsity)
-        model = model_cls(n_classes=n_classes, act_layer=False)
+        model = model_cls(n_classes=n_classes, act_layer=False, no_drop=True)
 
         for name, module in model.named_modules():
             if isinstance(module, (Conv1d, Conv2d)):
                 logging.info(f"{name} will be pruned with {sparsity} sparsity.")
                 module.register_forward_hook(act_prune)
+
+        lin_prune = OutputActivationPrune(sparsity=sparsity)
+        lin_layers = [module for module in model._linear_layers if isinstance(module, nn.Linear)][:-1]
+        for lin_layer in lin_layers:
+            lin_prune.apply(lin_layer)
 
     else:
         logging.info("The network will not be pruned.")
@@ -186,7 +196,7 @@ def main(seed, args: Namespace):
 
     callbacks = []
     
-    experiment_name = f'{model_name}_{dataset_name}'
+    experiment_name = f'STIM-CNN All Layer Pruning {dataset_name.upper()}'
 
     experiment = mlflow.get_experiment_by_name(experiment_name)
     if experiment:
@@ -218,7 +228,6 @@ def main(seed, args: Namespace):
             deterministic=cuda_deterministic,
             benchmark=False,
             log_every_n_steps=len(train_loader),
-            enable_progress_bar=False
         )
 
         mlflow.pytorch.autolog(log_every_n_epoch=1, log_models=False)

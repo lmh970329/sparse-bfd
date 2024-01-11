@@ -158,10 +158,10 @@ def main(seed, args: Namespace):
         fm_prune = OutputFeaturemapPrune(sparsity=sparsity, score_type=score_type)
         model = model_cls(n_classes=n_classes, act_layer=False)
 
-        for name, module in model.named_modules():
-            if isinstance(module, (Conv1d, Conv2d)):
-                logging.info(f"{name} will be pruned with {sparsity} sparsity.")
-                module.register_forward_hook(fm_prune)
+        logging.info(f"The last convolutional layer will be pruned with {sparsity} sparsity.")
+        last_layer = model._conv_layers[-1]
+        last_layer.register_forward_hook(fm_prune)
+
     
     elif drop_method == 'activation':
         act_prune = OutputActivationPrune(sparsity=sparsity)
@@ -186,7 +186,7 @@ def main(seed, args: Namespace):
 
     callbacks = []
     
-    experiment_name = f'{model_name}_{dataset_name}'
+    experiment_name = f'STFTCNN last layer Pruning {dataset_name.upper()}'
 
     experiment = mlflow.get_experiment_by_name(experiment_name)
     if experiment:
@@ -218,7 +218,6 @@ def main(seed, args: Namespace):
             deterministic=cuda_deterministic,
             benchmark=False,
             log_every_n_steps=len(train_loader),
-            enable_progress_bar=False
         )
 
         mlflow.pytorch.autolog(log_every_n_epoch=1, log_models=False)

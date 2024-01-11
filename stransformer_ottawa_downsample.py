@@ -1,10 +1,10 @@
 from fault_diagnosis_baseline import fdob, info
 from fault_diagnosis_baseline.fdob import processing
-from fault_diagnosis_baseline.fdob.model.module import Conv1d, Conv2d
+from fault_diagnosis_baseline.fdob.download import download_ottawa
+from fault_diagnosis_baseline.fdob.model.module import MultiHeadSelfAttention, MultiLayerPerceptron
 from pruning.utils import LightningModuleWrapper
-from pruning.activation.structured import OutputFeaturemapPrune
+from pruning.activation.structured import OutputEmbeddingPrune, OutputTokenPrune
 from pruning.activation.unstructured import OutputActivationPrune
-from utils import get_datamodule
 
 from argparse import ArgumentParser, Namespace
 from torch.optim import Adam
@@ -53,7 +53,7 @@ def parse_args():
     )
     parser.add_argument(
         '--activation-drop',
-        choices=['activation', 'featuremap', 'none']
+        choices=['unstr', 'str', 'token', 'none']
     )
     parser.add_argument(
         '--score-type',
@@ -94,6 +94,10 @@ def parse_args():
         '--device',
         type=int,
         default=0
+    ),
+    parser.add_argument(
+        '--downsample',
+        choices=['12k', '48k']
     )
     return parser.parse_args()
 
@@ -112,6 +116,9 @@ def main(seed, args: Namespace):
     drop_method = args.activation_drop
     score_type = args.score_type
     sparsity = args.activation_sparsity
+    downsample = args.downsample
+
+    sample_shift = 1024
 
     cuda_deterministic = True
 
@@ -133,48 +140,86 @@ def main(seed, args: Namespace):
         tf_data += [processing.InfinityNorm()]
     tf_label = [processing.NpToTensor()]
 
-    dmodule = get_datamodule(
-        data_path=data_path,
-        sample_length=sample_length,
-        batch_size=batch_size,
-        num_workers=num_workers,
-        tf_data=tf_data,
-        tf_label=tf_label,
-        snr_values=snr_values,
-        sample_shift=1024
+
+    df = download_ottawa(data_path)
+
+    def downsample(data: np.ndarray):
+        return data[::4]
+    
+    df['data'] = df['data'].apply(downsample)
+
+    train_df, val_df, test_df = fdob.split_dataframe(df, 0.6, 0.2)
+
+    X_train, y_train = fdob.build_from_dataframe(train_df, sample_length, sample_shift, False)
+    X_val, y_val = fdob.build_from_dataframe(val_df, sample_length, sample_shift, False)
+    X_test, y_test = fdob.build_from_dataframe(test_df, sample_length, sample_shift, False)
+
+    tag = "ottawa"
+
+    dmodule = fdob.DatasetHandler()
+
+    dmodule.assign(
+        X_train,
+        y_train,
+        X_val,
+        y_val,
+        X_test,
+        y_test,
+        sample_length,
+        tag,
+        transforms.Compose(tf_data),
+        transforms.Compose(tf_label),
+        batch_size,
+        num_workers
     )
 
-    if data_path.endswith('/'):
-        data_path = data_path[:-1]
-    dataset_name = data_path.split('/')[-1]
+    for snr in snr_values:
+        dmodule.assign(
+            X_train,
+            y_train,
+            X_val,
+            y_val,
+            X_test,
+            y_test,
+            sample_length,
+            f"{tag}{snr}",
+            transforms.Compose([processing.AWGN(snr)] + tf_data),
+            transforms.Compose(tf_label),
+            batch_size,
+            num_workers
+        )
 
-    train_loader = dmodule.dataloaders[dataset_name]['train']
-    val_loader = dmodule.dataloaders[dataset_name]['val']
-    test_loader = dmodule.dataloaders[dataset_name]['test']
+    train_loader = dmodule.dataloaders[tag]['train']
+    val_loader = dmodule.dataloaders[tag]['val']
+    test_loader = dmodule.dataloaders[tag]['test']
 
-    n_classes = n_classes_map[dataset_name]
+    n_classes = n_classes_map['ottawa']
+    model = model_cls(n_classes=n_classes)
 
-    if drop_method == 'featuremap':
-        fm_prune = OutputFeaturemapPrune(sparsity=sparsity, score_type=score_type)
-        model = model_cls(n_classes=n_classes, act_layer=False)
-
+    if drop_method == 'str':
+        prune = OutputEmbeddingPrune(sparsity=sparsity, score_type=score_type)
         for name, module in model.named_modules():
-            if isinstance(module, (Conv1d, Conv2d)):
-                logging.info(f"{name} will be pruned with {sparsity} sparsity.")
-                module.register_forward_hook(fm_prune)
+            if isinstance(module, (MultiLayerPerceptron, MultiHeadSelfAttention)):
+                logging.info(f"The output of {name} will be pruned with {sparsity} sparsity.")
+                prune.apply(module)
     
-    elif drop_method == 'activation':
-        act_prune = OutputActivationPrune(sparsity=sparsity)
-        model = model_cls(n_classes=n_classes, act_layer=False)
-
+    elif drop_method == 'unstr':
+        prune = OutputActivationPrune(sparsity=sparsity)
         for name, module in model.named_modules():
-            if isinstance(module, (Conv1d, Conv2d)):
-                logging.info(f"{name} will be pruned with {sparsity} sparsity.")
-                module.register_forward_hook(act_prune)
+            if isinstance(module, (MultiLayerPerceptron, MultiHeadSelfAttention)):
+                logging.info(f"The output of {name} will be pruned with {sparsity} sparsity.")
+                prune.apply(module)
+
+    elif drop_method == 'token':
+        prune = OutputTokenPrune(sparsity=sparsity)
+        for name, module in model.named_modules():
+            if isinstance(module, (MultiLayerPerceptron, MultiHeadSelfAttention)):
+                logging.info(f"The output of {name} will be pruned with {sparsity} sparsity.")
+                prune.apply(module)
 
     else:
         logging.info("The network will not be pruned.")
-        model = model_cls(n_classes=n_classes, act_layer=True)
+        
 
     optimizer = Adam(
         model.parameters(),
@@ -186,7 +231,7 @@ def main(seed, args: Namespace):
 
     callbacks = []
     
-    experiment_name = f'{model_name}_{dataset_name}'
+    experiment_name = f'S-Transformer Pruning MFPT {downsample.upper()}Hz'
 
     experiment = mlflow.get_experiment_by_name(experiment_name)
     if experiment:
@@ -236,17 +281,17 @@ def main(seed, args: Namespace):
             dataloaders=test_loader
         )
         for key, value in ret[-1].items():
-            mlflow.log_metric(f'{key}_{dataset_name}', value)
+            mlflow.log_metric(f'{key}_{tag}', value)
 
         for snr in snr_values:
-            tag = f'{dataset_name}{snr}'
-            noisy_loader = dmodule.dataloaders[tag]['test']
+            noise_tag = f'{tag}{snr}'
+            noisy_loader = dmodule.dataloaders[noise_tag]['test']
             ret = trainer.test(
                 pl_module,
                 dataloaders=noisy_loader
             )
             for key, value in ret[-1].items():
-                mlflow.log_metric(f'{key}_{tag}', value)
+                mlflow.log_metric(f'{key}_{noise_tag}', value)
         
 
 if __name__ == '__main__':

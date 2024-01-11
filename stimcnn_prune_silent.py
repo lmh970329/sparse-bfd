@@ -78,7 +78,7 @@ def parse_args():
     parser.add_argument(
         '--num-workers',
         type=int,
-        default=1
+        default=4
     )
     parser.add_argument(
         '--lr',
@@ -156,7 +156,7 @@ def main(seed, args: Namespace):
 
     if drop_method == 'featuremap':
         fm_prune = OutputFeaturemapPrune(sparsity=sparsity, score_type=score_type)
-        model = model_cls(n_classes=n_classes, act_layer=False)
+        model = model_cls(n_classes=n_classes, act_layer=False, no_drop=True)
 
         for name, module in model.named_modules():
             if isinstance(module, (Conv1d, Conv2d)):
@@ -165,7 +165,7 @@ def main(seed, args: Namespace):
     
     elif drop_method == 'activation':
         act_prune = OutputActivationPrune(sparsity=sparsity)
-        model = model_cls(n_classes=n_classes, act_layer=False)
+        model = model_cls(n_classes=n_classes, act_layer=False, no_drop=True)
 
         for name, module in model.named_modules():
             if isinstance(module, (Conv1d, Conv2d)):
@@ -186,7 +186,7 @@ def main(seed, args: Namespace):
 
     callbacks = []
     
-    experiment_name = f'{model_name}_{dataset_name}'
+    experiment_name = f'STIM-CNN No Dropout Pruning {dataset_name.upper()}'
 
     experiment = mlflow.get_experiment_by_name(experiment_name)
     if experiment:
